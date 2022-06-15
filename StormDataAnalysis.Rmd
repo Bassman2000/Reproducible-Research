@@ -1,0 +1,153 @@
+---
+title: "Storm Data Analysis - Fatalities, Injuries and Damage"
+author: "Al Richardson"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## Project Synopsis
+This report examines storm data from the NOAA in order to determine an effort to determine which events are most detrimental to health and which events have the greatest economic impact. The five event types corresponding to highest number of fatalities are presented, as are the five events leading to the highest numbers of injuries. Economic impact is measured by the amount of damage caused by storm events. The raw data distinguish between crop and property damage. Here we have added crop damage to property damage and present the five events leading to the greatest aggregated damage.
+
+## Loading and Preparation of Raw Data
+```{r message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(stringr)
+library(dplyr) 
+library(lubridate)
+library(ggplot2)
+
+if (!(exists('storm_data') && is.data.frame(get('storm_data')))){
+  storm_data <- read.csv('./repdata_data_StormData.csv')
+}
+
+data <- storm_data
+columns <- c('BGN_DATE', 'EVTYPE', 'FATALITIES', 'INJURIES', 
+             'CROPDMG', 'CROPDMGEXP', 'PROPDMG', 'PROPDMGEXP')
+data <- storm_data[, which(names(storm_data) %in% columns)]
+
+data$BGN_YEAR <- with(data, as.numeric(substr(BGN_DATE, 
+                                              nchar(BGN_DATE) - 11, 
+                                              nchar(BGN_DATE) - 8)))
+data$EVTYPE <- toupper(data$EVTYPE)
+data[data$EVTYPE == 'TSTM', ]$EVTYPE <- 'THUNDERSTORM'
+```
+
+The data frame *data* contains all events, and is used as the basis for fatality and injury data. 
+
+However, there may be financial damage data that cannot be made sensible. The columns *CROPDMG* contains the cost of damage, without factors of 10. The column *CROPDMGEXP* indicates the order of magnitude ('B' = Billions, 'M' = Millions, 'K' = Thousands, 'H' = Hundreds) of the cost in *CROPDMG*. Similarly for columns *PROPDMG* and *PROPDMGEXP*. In cases where the *...EXP* cannot be interpreted the damage costs make no sense, and are omitted. Thus we use a separate data frame, *dmg_data*.
+
+```{r}
+data$CROPDMGEXP <- toupper(data$CROPDMGEXP)
+data$PROPDMGEXP <- toupper(data$PROPDMGEXP)
+
+crpdmg_data <- data[data$CROPDMGEXP %in% c('B', 'M', 'K', 'H'), ]
+prpdmg_data <- data[data$PROPDMGEXP %in% c('B', 'M', 'K', 'H'), ]
+
+dmg_data <- rbind(prpdmg_data, crpdmg_data)
+dmg_data[dmg_data$PROPDMGEXP == 'B', ]$PROPDMG <- dmg_data[dmg_data$PROPDMGEXP == 'B', ]$PROPDMG * 1000000000
+dmg_data[dmg_data$PROPDMGEXP == 'M', ]$PROPDMG <- dmg_data[dmg_data$PROPDMGEXP == 'M', ]$PROPDMG * 1000000
+dmg_data[dmg_data$PROPDMGEXP == 'K', ]$PROPDMG <- dmg_data[dmg_data$PROPDMGEXP == 'K', ]$PROPDMG * 1000
+dmg_data[dmg_data$PROPDMGEXP == 'H', ]$PROPDMG <- dmg_data[dmg_data$PROPDMGEXP == 'H', ]$PROPDMG * 100
+dmg_data[dmg_data$CROPDMGEXP == 'B', ]$CROPDMG <- dmg_data[dmg_data$CROPDMGEXP == 'B', ]$CROPDMG * 1000000000
+dmg_data[dmg_data$CROPDMGEXP == 'M', ]$CROPDMG <- dmg_data[dmg_data$CROPDMGEXP == 'M', ]$CROPDMG * 1000000
+dmg_data[dmg_data$CROPDMGEXP == 'K', ]$CROPDMG <- dmg_data[dmg_data$CROPDMGEXP == 'K', ]$CROPDMG * 1000
+dmg_data[dmg_data$CROPDMGEXP == 'H', ]$CROPDMG <- dmg_data[dmg_data$CROPDMGEXP == 'H', ]$CROPDMG * 100
+
+dmg_data$DAMAGE <- dmg_data$CROPDMG + dmg_data$PROPDMG
+```
+
+There are multiple event type strings for similar, or identical, event types (e.g. "HEAT",  "EXCESSIVE HEAT", "EXTREME HEAT", "RECORD HEAT"). Data for several of these EVTYPEs are combined under 'master' EVTYPEs.
+
+```{r}
+types <- c('HEAT', 'COLD', 'THUNDERSTORM', 'TORNADO')
+for (typ in types){
+  # All data
+  typ_list <- unique(data[str_detect(data$EVTYPE, typ) & 
+                            !str_detect(data$EVTYPE, 'NON'),]$EVTYPE)
+  if (length(typ_list) >=3)
+    data[data$EVTYPE %in% typ_list, ]$EVTYPE <- typ
+  # Damage data
+  typ_list <- unique(dmg_data[str_detect(dmg_data$EVTYPE, typ) & 
+                            !str_detect(dmg_data$EVTYPE, 'NON'),]$EVTYPE)
+  
+  if (length(typ_list) >=3)
+    dmg_data[dmg_data$EVTYPE %in% typ_list, ]$EVTYPE <- typ
+}
+rm(typ, typ_list, types)
+```
+
+```{r}
+fatalities <- subset(aggregate(FATALITIES ~ EVTYPE + BGN_YEAR, data, sum), FATALITIES != 0)
+injuries <- subset(aggregate(INJURIES ~ EVTYPE + BGN_YEAR, data, sum), INJURIES != 0)
+damage <- subset(aggregate(DAMAGE ~ EVTYPE + BGN_YEAR, dmg_data, sum), DAMAGE != 0)
+
+ft <- fatalities; ft$CLASS <- 'FATALITIES'; 
+names(ft) <- replace(names(ft), names(ft) == 'FATALITIES', 'NUM')
+
+ij <- injuries; ij$CLASS <- 'INJURIES'; 
+names(ij) <- replace(names(ij), names(ij) == 'INJURIES', 'NUM')
+
+dg <- damage; dg$CLASS <- 'DAMAGE';
+names(dg) <- replace(names(dg), names(dg) == 'DAMAGE', 'NUM')
+# Scale damage costs to be given in millions
+dg$NUM <- dg$NUM/1000000
+
+df <- rbind(dg, rbind(ft, ij))
+df_last10 <- df[df$BGN_YEAR >= 2002, ]
+df_first51 <- df[df$BGN_YEAR < 2002, ]
+
+```
+
+## Results
+The five worst event types, vis a vis fatalities, injuries and damage costs, are presented for the entire span of the storm data (i.e. 1950 -2011). Similar graphs are presented for the first 51 years and the last 10 years of data collection, in order to spot any recent changes.
+
+```{r}
+
+fat <- top_n(aggregate(NUM ~ EVTYPE + CLASS, df[df$CLASS == 'FATALITIES',], mean), 5, NUM)
+inj <- top_n(aggregate(NUM ~ EVTYPE + CLASS, df[df$CLASS == 'INJURIES',], mean), 5, NUM)
+dam <- top_n(aggregate(NUM ~ EVTYPE + CLASS, df[df$CLASS == 'DAMAGE',], mean), 5, NUM)
+df_plot <- rbind(dam, rbind(inj, fat))
+
+df_plot$CLASS <- factor(df_plot$CLASS, labels = c('Damage (millions of $)', 'Fatalities', 'Injuries'))
+ggplot(df_plot, aes(EVTYPE, NUM)) + geom_bar(stat = 'sum') + 
+    facet_wrap(. ~ CLASS, scales = 'free') + 
+    labs(x = 'Event Type',y = '', title = "High Impact Storm Events 1950 - 2011") +
+    theme(axis.text.x = element_text(angle = 80, hjust = 1), 
+          plot.title = element_text(hjust = 0.5), legend.position = 'none') 
+```
+
+```{r}
+fat <- top_n(aggregate(NUM ~ EVTYPE + CLASS, 
+                       df_first51[df_first51$CLASS == 'FATALITIES',], mean), 5, NUM)
+inj <- top_n(aggregate(NUM ~ EVTYPE + CLASS, 
+                       df_first51[df_first51$CLASS == 'INJURIES',], mean), 5, NUM)
+dam <- top_n(aggregate(NUM ~ EVTYPE + CLASS, 
+                       df_first51[df_first51$CLASS == 'DAMAGE',], mean), 5, NUM)
+df_plot <- rbind(dam, rbind(inj, fat))
+
+df_plot$CLASS <- factor(df_plot$CLASS, labels = c('Damage (millions of $)', 'Fatalities', 'Injuries'))
+ggplot(df_plot, aes(EVTYPE, NUM)) + geom_bar(stat = 'sum') + 
+    facet_wrap(. ~ CLASS, scales = 'free') + 
+    labs(x = 'Event Type',y = '', title = "High Impact Storm Events 1950 - 2001") +
+    theme(axis.text.x = element_text(angle = 80, hjust = 1), 
+          plot.title = element_text(hjust = 0.5), legend.position = 'none') 
+```
+
+```{r}
+fat <- top_n(aggregate(NUM ~ EVTYPE + CLASS, 
+                       df_last10[df_last10$CLASS == 'FATALITIES',], mean), 5, NUM)
+inj <- top_n(aggregate(NUM ~ EVTYPE + CLASS, 
+                       df_last10[df_last10$CLASS == 'INJURIES',], mean), 5, NUM)
+dam <- top_n(aggregate(NUM ~ EVTYPE + CLASS, 
+                       df_last10[df_last10$CLASS == 'DAMAGE',], mean), 5, NUM)
+df_plot <- rbind(dam, rbind(inj, fat))
+
+df_plot$CLASS <- factor(df_plot$CLASS, labels = c('Damage (millions of $)', 'Fatalities', 'Injuries'))
+ggplot(df_plot, aes(EVTYPE, NUM)) + geom_bar(stat = 'sum') + 
+    facet_wrap(. ~ CLASS, scales = 'free') + 
+    labs(x = 'Event Type',y = '', title = "High Impact Storm Events 2002 - 2011") +
+    theme(axis.text.x = element_text(angle = 80, hjust = 1), 
+          plot.title = element_text(hjust = 0.5), legend.position = 'none') 
+```
+
